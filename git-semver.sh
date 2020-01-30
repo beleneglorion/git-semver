@@ -170,31 +170,42 @@ version-parse-pre-release() {
 }
 
 version-get() {
-    local sort_args version version_pre_releases pre_release_id_count pre_release_id_index
-    local tags=$(git tag)
-    local version_pre_release=$(
-        local version_main=$(
-            echo "$tags" |
-                grep "^${VERSION_PREFIX}[0-9]\+\.[0-9]\+\.[0-9]\+" |
-                awk -F '[-+]' '{ print $1 }' |
-                uniq |
-                sort -t '.' -k 1,1n -k 2,2n -k 3,3n |
-                tail -n 1
+    local sort_args version version_pre_releases pre_release_id_count sorted_tags tags pre_release_id_index
+    tags=$(git tag --sort=v:refname)
+    sorted_tags=$(
+        echo "$tags" |
+            grep -oP "^${VERSION_PREFIX}\K[0-9]+\.[0-9]+\.[0-9]+.*" |
+            awk -F '[-+]' '{ print $1 }' |
+            uniq |
+            sort -t '.' -k 1,1n -k 2,2n -k 3,3n  |
+            awk -v VERSION_PREFIX="${VERSION_PREFIX}" '{print VERSION_PREFIX $1}'
+    )
+    version_pre_release=$(
+        local version_main version_pre_releases pre_release_id_count
+        version_main=$(echo "$sorted_tags" | tail -n 1)
+        version_pre_releases=$(
+            if [[   $(echo "$sorted_tags" | grep "^${version_main//./\\.}")  ]]; then
+                echo "$sorted_tags" | grep "^${version_main//./\\.}" |  awk -F '-' '{ print $2 }'
+            else
+              echo ""
+            fi
         )
-        local version_pre_releases=$(
-            echo "$tags" |
-                grep "^${version_main//./\\.}" |
-                awk -F '-' '{ print $2 }'
-        )
-        local pre_release_id_count=$(
-            echo "$version_pre_releases" | tr -d -c ".\n" |
-                awk 'BEGIN{ max = 0 }
-                { if (max < length) { max = length } }
-                END{ if ( max == 0 ) { print 0 } else { print max + 1 } }'
-        )
+         if [[ -n  $version_pre_releases ]]; then
+           echo "utu"
+           pre_release_id_count=$(
+              echo "$version_pre_releases" | tr -d -c ".\n" |
+                  awk 'BEGIN{ max = 0 }
+                  { if (max < length) { max = length } }
+                  END{ if ( max == 0 ) { print 0 } else { print max + 1 } }'
+          )
+        else
+          pre_release_id_count=0
+        fi
+
         local sort_args='-t.'
-        for ((pre_release_id_index=1; pre_release_id_index<=$pre_release_id_count; pre_release_id_index++))
+        for ((pre_release_id_index=1; pre_release_id_index<=pre_release_id_count; pre_release_id_index++))
         do
+            echo "lala "
             chars="$(echo "$version_pre_releases" | awk -F '.' '{ print $'$pre_release_id_index' }' | tr -d $'\n')"
             if [[ "$chars" =~ ^[0-9]*$ ]]
             then
@@ -204,13 +215,18 @@ version-get() {
             fi
             sort_args="$sort_args -k$pre_release_id_index,$pre_release_id_index$sort_key_type"
         done
-        echo "$version_pre_releases" |
-            eval sort $sort_args |
-            awk '{ if (length == 0) { print "'$version_main'" } else { print "'$version_main'-"$1 } }' |
-            tail -n 1
+        if [[ -n  $version_pre_releases ]]; then
+         echo "$version_pre_releases" |
+              eval sort "$sort_args" |
+              awk '{ if (length == 0) { print "'$version_main'" } else { print "'$version_main'-"$1 } }' |
+              tail -n 1
+        else
+          echo $version_main
+        fi
     )
+
     # Get the version with the build number
-    version=$(echo "$tags" | grep "^${version_pre_release//./\\.}" | tail -n 1)
+    version=$(echo "$sorted_tags" | grep "^${version_pre_release//./\\.}" | tail -n 1)
     if [ "" == "${version}" ]
     then
         return 1
