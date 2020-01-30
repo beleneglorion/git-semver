@@ -171,7 +171,7 @@ version-parse-pre-release() {
 
 version-get() {
     local sort_args version version_pre_releases pre_release_id_count sorted_tags tags pre_release_id_index
-    tags=$(git tag --sort=v:refname)
+    tags=$(git tag --sort=v:refname --merged)
     sorted_tags=$(
         echo "$tags" |
             grep -oP "^${VERSION_PREFIX}\K[0-9]+\.[0-9]+\.[0-9]+.*" |
