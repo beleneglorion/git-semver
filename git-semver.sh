@@ -2,6 +2,22 @@
 ########################################
 # Usage
 ########################################
+set -eE -o functrace
+
+DEBUG_MODE=${DEBUG_MODE:-0}
+DEBUG_MODE=0
+failure() {
+  local lineno=$1
+  local msg=$2
+  echo "Failed at $lineno: $msg"
+}
+trap 'failure ${LINENO} "$BASH_COMMAND"' ERR
+
+debug() {
+ if [[ "${DEBUG_MODE}" -eq "1" ]]; then
+   bashful-messages info "$*"
+ fi
+}
 
 usage() {
 	cat <<-EOF
@@ -42,7 +58,7 @@ plugin-output() {
     local output=
     while IFS='' read -r line
     do
-        if [ -z "${output}" ]
+        if [[ -z "${output}" ]]
         then
             echo -e "\n$type plugin \"$name\":\n"
             output=1
@@ -61,7 +77,7 @@ plugin-list() {
     do
         plugin_type=${types[${i}]}
         plugin_dir="${dirs[${i}]}/.git-semver/plugins"
-        if [ -d "${plugin_dir}" ]
+        if [[ -d "${plugin_dir}" ]]
         then
             find "${plugin_dir}" -maxdepth 1 -type f -exec echo "${plugin_type},{}" \;
         fi
@@ -117,7 +133,7 @@ plugin-debug() {
     local minor=$(version-parse-minor "${version}")
     # shellcheck disable=SC2155
     local patch=$(version-parse-patch "${version}")
-    if [ "" == "$version" ]
+    if [[ "" == "$version" ]]
     then
         local new=0.1.0
     else
@@ -169,10 +185,40 @@ version-parse-pre-release() {
     echo "$1" | cut -d "." -f3 | grep -o '\-[0-9A-Za-z.]\+'
 }
 
+version-parse-pre-release-pure() {
+    echo "$1" | cut -d "." -f3 | grep -o '\-[0-9A-Za-z.]\+'|cut -d "-" -f 2
+}
+
+version-parse-build() {
+    echo "$1" | cut -d "." -f3 | grep -o '\+[0-9A-Za-z.]'|cut -d "+" -f 2
+}
+
+version-parse() {
+    # shellcheck disable=SC2155
+    local version=$(version-get)
+    # shellcheck disable=SC2155
+    local major=$(version-parse-major "${version}")
+    # shellcheck disable=SC2155
+    local minor=$(version-parse-minor "${version}")
+    # shellcheck disable=SC2155
+    local patch=$(version-parse-patch "${version}")
+    # shellcheck disable=SC2155
+    local pre_release=$(version-parse-pre-release-pure "${version}")
+    # shellcheck disable=SC2155
+    local build=$(version-parse-build "${version}")
+    echo "FULL_VERSION=${version}"
+    echo "MAJOR_VERSION=${major}"
+    echo "MINOR_VERSION=${minor}"
+    echo "PATCH_VERSION=${patch}"
+    echo "PRE_RELEASE=${pre_release}"
+    echo "BUILD=${build}"
+}
+
+
 version-get() {
-    local sort_args version version_pre_releases pre_release_id_count sorted_tags tags pre_release_id_index
+    local sort_args version version_pre_releases pre_release_id_count sorted_version tags pre_release_id_index
     tags=$(git tag --sort=v:refname --merged)
-    sorted_tags=$(
+    sorted_version=$(
         echo "$tags" |
             grep -oP "^${VERSION_PREFIX}\K[0-9]+\.[0-9]+\.[0-9]+.*" |
             awk -F '[-+]' '{ print $1 }' |
@@ -180,33 +226,32 @@ version-get() {
             sort -t '.' -k 1,1n -k 2,2n -k 3,3n  |
             awk -v VERSION_PREFIX="${VERSION_PREFIX}" '{print VERSION_PREFIX $1}'
     )
+    debug "sorted version ${sorted_version}"
+    debug "sorted tags ${tags}"
     version_pre_release=$(
         local version_main version_pre_releases pre_release_id_count
-        version_main=$(echo "$sorted_tags" | tail -n 1)
+        version_main=$(echo "$sorted_version" | tail -n 1)
+        debug "version_main ${version_main}"
         version_pre_releases=$(
-            if [[   $(echo "$sorted_tags" | grep "^${version_main//./\\.}")  ]]; then
-                echo "$sorted_tags" | grep "^${version_main//./\\.}" |  awk -F '-' '{ print $2 }'
+            if [[  $(echo "$tags" | grep "^${version_main//./\\.}")  ]]; then
+               echo "$tags" | grep "^${version_main//./\\.}" |  awk -F '-' '{ print $2 }'
             else
               echo ""
             fi
         )
-         if [[ -n  $version_pre_releases ]]; then
-           echo "utu"
+         debug "version_pre_releases 1 ${version_pre_releases}"
+         if [[ -n  ${version_pre_releases} ]]; then
            pre_release_id_count=$(
-              echo "$version_pre_releases" | tr -d -c ".\n" |
-                  awk 'BEGIN{ max = 0 }
-                  { if (max < length) { max = length } }
-                  END{ if ( max == 0 ) { print 0 } else { print max + 1 } }'
+              echo "$version_pre_releases" | tr -d -c ".\n" | awk 'BEGIN{ max = 0 }  { if (max < length) { max = length } }  END{ if ( max == 0 ) { print 0 } else { print max + 1 } }'
           )
         else
           pre_release_id_count=0
         fi
-
+        debug "pre_release_id_count ${pre_release_id_count}"
         local sort_args='-t.'
         for ((pre_release_id_index=1; pre_release_id_index<=pre_release_id_count; pre_release_id_index++))
         do
-            echo "lala "
-            chars="$(echo "$version_pre_releases" | awk -F '.' '{ print $'$pre_release_id_index' }' | tr -d $'\n')"
+            chars="$(echo "$version_pre_releases" | awk -F '.' '{ print $'${pre_release_id_index}' }' | tr -d $'\n')"
             if [[ "$chars" =~ ^[0-9]*$ ]]
             then
                 sort_key_type=n
@@ -215,19 +260,17 @@ version-get() {
             fi
             sort_args="$sort_args -k$pre_release_id_index,$pre_release_id_index$sort_key_type"
         done
-        if [[ -n  $version_pre_releases ]]; then
-         echo "$version_pre_releases" |
-              eval sort "$sort_args" |
-              awk '{ if (length == 0) { print "'$version_main'" } else { print "'$version_main'-"$1 } }' |
-              tail -n 1
+        debug "sort_args ${sort_args}"
+        if [[ -n  ${version_pre_releases} ]]; then
+         echo "$version_pre_releases" | eval sort "${sort_args}" | awk '{ if (length == 0) { print "'${version_main}'" } else { print "'${version_main}'-"$1 } }' | tail -n 1
         else
-          echo $version_main
+          echo ${version_main}
         fi
     )
-
+    debug "version_pre_release $version_pre_release"
     # Get the version with the build number
-    version=$(echo "$sorted_tags" | grep "^${version_pre_release//./\\.}" | tail -n 1)
-    if [ "" == "${version}" ]
+    version=$(echo "$tags" | grep "^${version_pre_release//./\\.}" | tail -n 1)
+    if [[ "" == "${version}" ]]
     then
         return 1
     else
@@ -242,7 +285,7 @@ version-major() {
     local version=$(version-get)
     # shellcheck disable=SC2155
     local major=$(version-parse-major "${version}")
-    if [ "" == "$version" ]
+    if [[ "" == "$version" ]]
     then
         local new=${VERSION_PREFIX}1.0.0${pre_release}${build}
     else
@@ -260,7 +303,7 @@ version-minor() {
     local major=$(version-parse-major "${version}")
     # shellcheck disable=SC2155
     local minor=$(version-parse-minor "${version}")
-    if [ "" == "$version" ]
+    if [[ "" == "$version" ]]
     then
         local new=${VERSION_PREFIX}0.1.0${pre_release}${build}
     else
@@ -280,7 +323,7 @@ version-patch() {
     local minor=$(version-parse-minor "${version}")
     # shellcheck disable=SC2155
     local patch=$(version-parse-patch "${version}")
-    if [ "" == "$version" ]
+    if [[ "" == "$version" ]]
     then
         local new=${VERSION_PREFIX}0.1.0${pre_release}${build}
     else
@@ -300,7 +343,8 @@ version-pre-release() {
     local minor=$(version-parse-minor "${version}")
     # shellcheck disable=SC2155
     local patch=$(version-parse-patch "${version}")
-    if [ "" == "$version" ]
+
+    if [[ "" == "$version" ]]
     then
         local new=${VERSION_PREFIX}0.1.0-${pre_release}${build}
     else
@@ -321,7 +365,7 @@ version-build() {
     local patch=$(version-parse-patch "${version}")
     # shellcheck disable=SC2155
     local pre_release=$(version-parse-pre-release "${version}")
-    if [ "" == "$version" ]
+    if [[ "" == "$version" ]]
     then
         local new=${VERSION_PREFIX}0.1.0${pre_release}+${build}
     else
@@ -335,16 +379,16 @@ version-do() {
     local version="$2"
     local sign="${GIT_SIGN:-0}"
     local cmd="git tag"
-    if [ "$sign" == "1" ]
+    if [[ "$sign" == "1" ]]
     then
         cmd="$cmd -as -m $new"
     fi
-    if [ $dryrun == 1 ]
+    if [[ ${dryrun} == 1 ]]
     then
         echo "$new"
     elif plugin-run "$new" "$version"
     then
-        $cmd "$new" && echo "$new"
+        ${cmd} "$new" && echo "$new"
     fi
 }
 
@@ -363,11 +407,11 @@ DIR_CONF="${XDG_CONFIG_HOME:-${HOME}}/.git-semver"
 DIR_ROOT="$(git rev-parse --show-toplevel 2> /dev/null)"
 
 # Set (and load) user config
-if [ -f "${DIR_ROOT}/.git-semver" ]
+if [[ -f "${DIR_ROOT}/.git-semver" ]]
 then
     FILE_CONF="${DIR_ROOT}/.git-semver"
     source "${FILE_CONF}"
-elif [ -f "${DIR_CONF}/config" ]
+elif [[ -f "${DIR_CONF}/config" ]]
 then
     FILE_CONF="${DIR_CONF}/config"
     # shellcheck source=config.example
@@ -428,12 +472,15 @@ case "$action" in
         version-patch "$pre_release" "$build"
         ;;
     pre-release)
-        [ -n "$pre_release" ] || usage
+        [[ -n "$pre_release" ]] || usage
         version-pre-release "$pre_release" "$build"
         ;;
     build)
-        [ -n "$build" ] || usage
+        [[ -n "$build" ]] || usage
         version-build "$build"
+        ;;
+    parse)
+        version-parse
         ;;
     debug)
         plugin-debug
