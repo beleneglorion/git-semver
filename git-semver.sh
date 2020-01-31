@@ -2,10 +2,17 @@
 ########################################
 # Usage
 ########################################
-set -eE -o functrace
+set -o errexit -o pipefail
+
+NAT='0|[1-9][0-9]*'
+ALPHANUM='[0-9]*[A-Za-z-][0-9A-Za-z-]*'
+IDENT="$NAT|$ALPHANUM"
+FIELD='[0-9A-Za-z-]+'
+
+SEMVER_REGEX="^[vV]?($NAT)\\.($NAT)\\.($NAT)(\\-(${IDENT})(\\.(${IDENT}))*)?(\\+${FIELD}(\\.${FIELD})*)?$"
+
 
 DEBUG_MODE=${DEBUG_MODE:-0}
-DEBUG_MODE=0
 failure() {
   local lineno=$1
   local msg=$2
@@ -34,6 +41,8 @@ usage() {
 		 patch|next [--dryrun] [-p <pre-release>] [-b <build>] Generates a tag for the next patch version and echos to the screen
 		 pre-release [--dryrun] -p <pre-release> [-b <build>]  Generates a tag for a pre-release version and echos to the screen
 		 build [--dryrun] -b <build>                           Generates a tag for a build and echos to the screen
+		 parse <version>                                       Return full and splited part of version
+		 compare <version1> <version1>                         Compare versions
 		 help                                                  This message
 
 	EOF
@@ -165,6 +174,115 @@ validate-build() {
     fi
 }
 
+validate-version() {
+  local version=$1
+  debug "version to validate $version"
+  debug "SEMVER_REGEX $SEMVER_REGEX"
+  if [[ "$version" =~ $SEMVER_REGEX ]]; then
+    # if a second argument is passed, store the result in var named by $2
+    if [ "$#" -eq "2" ]; then
+      local major=${BASH_REMATCH[1]}
+      local minor=${BASH_REMATCH[2]}
+      local patch=${BASH_REMATCH[3]}
+      local prere=${BASH_REMATCH[4]}
+      local build=${BASH_REMATCH[8]}
+      eval "$2=(\"$major\" \"$minor\" \"$patch\" \"$prere\" \"$build\")"
+    else
+      echo "$version"
+    fi
+  else
+    error "version $version does not match the semver scheme 'X.Y.Z(-PRERELEASE)(+BUILD)'. "
+  fi
+}
+
+is-nat() {
+    [[ "$1" =~ ^($NAT)$ ]]
+}
+
+is-null() {
+    [ -z "$1" ]
+}
+
+order-nat() {
+    [ "$1" -lt "$2" ] && { echo -1 ; return ; }
+    [ "$1" -gt "$2" ] && { echo 1 ; return ; }
+    echo 0
+}
+
+order-string() {
+    [[ $1 < $2 ]] && { echo -1 ; return ; }
+    [[ $1 > $2 ]] && { echo 1 ; return ; }
+    echo 0
+}
+
+# given two (named) arrays containing NAT and/or ALPHANUM fields, compare them
+# one by one according to semver 2.0.0 spec. Return -1, 0, 1 if left array ($1)
+# is less-than, equal, or greater-than the right array ($2).  The longer array
+# is considered greater-than the shorter if the shorter is a prefix of the longer.
+#
+compare-fields() {
+    local l="$1[@]"
+    local r="$2[@]"
+    local leftfield=( "${!l}" )
+    local rightfield=( "${!r}" )
+    local left
+    local right
+
+    local i=$(( -1 ))
+    local order=$(( 0 ))
+
+    while true
+    do
+        [ $order -ne 0 ] && { echo $order ; return ; }
+
+        : $(( i++ ))
+        left="${leftfield[$i]}"
+        right="${rightfield[$i]}"
+
+        is-null "$left" && is-null "$right" && { echo 0  ; return ; }
+        is-null "$left"                     && { echo -1 ; return ; }
+                           is-null "$right" && { echo 1  ; return ; }
+
+        is-nat "$left" &&  is-nat "$right" && { order=$(order-nat "$left" "$right") ; continue ; }
+        is-nat "$left"                     && { echo -1 ; return ; }
+                           is-nat "$right" && { echo 1  ; return ; }
+                                              { order=$(order-string "$left" "$right") ; continue ; }
+    done
+}
+
+version-compare() {
+  local order
+  validate-version "$1" V
+  validate-version "$2" V_
+
+  # compare major, minor, patch
+
+  local left=( "${V[0]}" "${V[1]}" "${V[2]}" )
+  local right=( "${V_[0]}" "${V_[1]}" "${V_[2]}" )
+
+  order=$(compare-fields left right)
+  [ "$order" -ne 0 ] && { echo "$order" ; return ; }
+
+  # compare pre-release ids when M.m.p are equal
+
+  local prerel="${V[3]:1}"
+  local prerel_="${V_[3]:1}"
+  local left=( ${prerel//./ } )
+  local right=( ${prerel_//./ } )
+
+  # if left and right have no pre-release part, then left equals right
+  # if only one of left/right has pre-release part, that one is less than simple M.m.p
+
+  [ -z "$prerel" ] && [ -z "$prerel_" ] && { echo 0  ; return ; }
+  [ -z "$prerel" ]                      && { echo 1  ; return ; }
+                      [ -z "$prerel_" ] && { echo -1 ; return ; }
+
+  # otherwise, compare the pre-release id's
+
+  compare-fields left right
+}
+
+
 ########################################
 # Version functions
 ########################################
@@ -216,7 +334,7 @@ version-parse() {
 
 
 version-get() {
-    local sort_args version version_pre_releases pre_release_id_count sorted_version tags pre_release_id_index
+    local sort_args version_main version version_pre_releases pre_release_id_count sorted_version tags pre_release_id_index
     tags=$(git tag --sort=v:refname --merged)
     sorted_version=$(
         echo "$tags" |
@@ -228,10 +346,16 @@ version-get() {
     )
     debug "sorted version ${sorted_version}"
     debug "sorted tags ${tags}"
+    version_main=$(echo "$sorted_version" | tail -n 1)
+    debug "version_main ${version_main}"
     version_pre_release=$(
-        local version_main version_pre_releases pre_release_id_count
-        version_main=$(echo "$sorted_version" | tail -n 1)
-        debug "version_main ${version_main}"
+        local  version_pre_releases pre_release_id_count
+        if [[ $(echo "$tags" | grep -P "^${version_main}\$" ) ]]; then
+          debug "version_main exit don't search pre-relase"
+          echo ""
+          exit 0
+        fi
+
         version_pre_releases=$(
             if [[  $(echo "$tags" | grep "^${version_main//./\\.}")  ]]; then
                echo "$tags" | grep "^${version_main//./\\.}" |  awk -F '-' '{ print $2 }'
@@ -241,10 +365,13 @@ version-get() {
         )
          debug "version_pre_releases 1 ${version_pre_releases}"
          if [[ -n  ${version_pre_releases} ]]; then
+          debug "count pre release"
            pre_release_id_count=$(
-              echo "$version_pre_releases" | tr -d -c ".\n" | awk 'BEGIN{ max = 0 }  { if (max < length) { max = length } }  END{ if ( max == 0 ) { print 0 } else { print max + 1 } }'
+              echo "${version_pre_releases}" | sed '/^[[:space:]]*$/d' | awk 'BEGIN{ max = 0 }  { if (max < length) { max = length } }  END{ if ( max == 0 ) { print 0 } else { print max + 1 } }'
           )
+          pre_release_id_count="$((pre_release_id_count-2))"
         else
+          debug "empty pre release ?"
           pre_release_id_count=0
         fi
         debug "pre_release_id_count ${pre_release_id_count}"
@@ -261,15 +388,22 @@ version-get() {
             sort_args="$sort_args -k$pre_release_id_index,$pre_release_id_index$sort_key_type"
         done
         debug "sort_args ${sort_args}"
+
         if [[ -n  ${version_pre_releases} ]]; then
          echo "$version_pre_releases" | eval sort "${sort_args}" | awk '{ if (length == 0) { print "'${version_main}'" } else { print "'${version_main}'-"$1 } }' | tail -n 1
         else
           echo ${version_main}
         fi
     )
+
     debug "version_pre_release $version_pre_release"
     # Get the version with the build number
-    version=$(echo "$tags" | grep "^${version_pre_release//./\\.}" | tail -n 1)
+    if [[ -z "${version_pre_release}" ]]; then
+          version="${version_main}"
+    else
+         version=$(echo "$tags" | grep "^${version_pre_release//./\\.}" | tail -n 1)
+    fi
+
     if [[ "" == "${version}" ]]
     then
         return 1
@@ -448,6 +582,16 @@ do
             shift
             validate-pre-release "$pre_release"
             ;;
+        -v1)
+            v1=$2
+            shift
+            validate-version "$v1"
+            ;;
+        -v2)
+            v2=$2
+            shift
+            validate-version "$v2"
+            ;;
         ?*)
             action=$1
             ;;
@@ -481,6 +625,9 @@ case "$action" in
         ;;
     parse)
         version-parse
+        ;;
+    compare)
+        version-compare $v1 $v2
         ;;
     debug)
         plugin-debug
