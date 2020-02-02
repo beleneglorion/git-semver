@@ -1,18 +1,44 @@
 #!/bin/bash
-########################################
-# Usage
-########################################
+
+# todo add bats unit test :)
+
 set -o errexit -o pipefail
 
 NAT='0|[1-9][0-9]*'
 ALPHANUM='[0-9]*[A-Za-z-][0-9A-Za-z-]*'
 IDENT="$NAT|$ALPHANUM"
 FIELD='[0-9A-Za-z-]+'
-
 SEMVER_REGEX="^[vV]?($NAT)\\.($NAT)\\.($NAT)(\\-(${IDENT})(\\.(${IDENT}))*)?(\\+${FIELD}(\\.${FIELD})*)?$"
-
-
 DEBUG_MODE=${DEBUG_MODE:-0}
+VERSION_PREFIX=${VERSION_PREFIX:""}
+
+info () {
+ local msg=$@
+ if [[ $(declare -p ${msg} 2> /dev/null | grep -q '^declare \-a')  ]]; then
+ printf "\r[ \033[00;34m..\033[0m ] Array : \n" >&2
+  for line in "${msg[@]}"
+    do
+       printf "\r - [ \033[00;34m..\033[0m ] $line\n" >&2
+    done
+ else
+    printf "\r [ \033[00;34m..\033[0m ] $msg\n" >&2
+ fi
+}
+
+user () {
+  printf "\r  [ \033[0;33m??\033[0m ] $1\n"
+}
+
+success () {
+  printf "\r\033[2K  [ \033[00;32mOK\033[0m ] $1\n"
+}
+
+fail () {
+  printf "\r\033[2K  [\033[0;31mFAIL\033[0m] $1\n"
+  echo ''
+  exit
+}
+
 failure() {
   local lineno=$1
   local msg=$2
@@ -22,7 +48,7 @@ trap 'failure ${LINENO} "$BASH_COMMAND"' ERR
 
 debug() {
  if [[ "${DEBUG_MODE}" -eq "1" ]]; then
-   bashful-messages info "$*"
+   info $*
  fi
 }
 
@@ -39,6 +65,7 @@ usage() {
 		 major [--dryrun] [-p <pre-release>] [-b <build>]      Generates a tag for the next major version and echos to the screen
 		 minor [--dryrun] [-p [<pre-release> [-b <build>]      Generates a tag for the next minor version and echos to the screen
 		 patch|next [--dryrun] [-p <pre-release>] [-b <build>] Generates a tag for the next patch version and echos to the screen
+		 release [--dryrun]                                    Generates a tag for the core version (remove pre-release and build part)
 		 pre-release [--dryrun] -p <pre-release> [-b <build>]  Generates a tag for a pre-release version and echos to the screen
 		 build [--dryrun] -b <build>                           Generates a tag for a build and echos to the screen
 		 parse <version>                                       Return full and splited part of version
@@ -134,20 +161,18 @@ plugin-run() {
 }
 
 plugin-debug() {
-    # shellcheck disable=SC2155
-    local version=$(version-get)
-    # shellcheck disable=SC2155
-    local major=$(version-parse-major "${version}")
-    # shellcheck disable=SC2155
-    local minor=$(version-parse-minor "${version}")
-    # shellcheck disable=SC2155
-    local patch=$(version-parse-patch "${version}")
-    if [[ "" == "$version" ]]
+    local new version major patch new
+    version=$(version-get)
+    major=$(version-parse-major "${version}")
+    minor=$(version-parse-minor "${version}")
+    patch=$(version-parse-patch "${version}")
+
+    new=0.1.0
+    if [[ -n "$version" ]]
     then
-        local new=0.1.0
-    else
-        local new=${major}.${minor}.$((patch+1))
+        new=${major}.${minor}.$((patch+1))
     fi
+
     plugin-run "$new" "$version"
 }
 
@@ -180,7 +205,7 @@ validate-version() {
   debug "SEMVER_REGEX $SEMVER_REGEX"
   if [[ "$version" =~ $SEMVER_REGEX ]]; then
     # if a second argument is passed, store the result in var named by $2
-    if [ "$#" -eq "2" ]; then
+    if [[ "$#" -eq "2" ]]; then
       local major=${BASH_REMATCH[1]}
       local minor=${BASH_REMATCH[2]}
       local patch=${BASH_REMATCH[3]}
@@ -200,12 +225,12 @@ is-nat() {
 }
 
 is-null() {
-    [ -z "$1" ]
+    [[ -z "$1" ]]
 }
 
 order-nat() {
-    [ "$1" -lt "$2" ] && { echo -1 ; return ; }
-    [ "$1" -gt "$2" ] && { echo 1 ; return ; }
+    [[ "$1" -lt "$2" ]] && { echo -1 ; return ; }
+    [[ "$1" -gt "$2" ]] && { echo 1 ; return ; }
     echo 0
 }
 
@@ -233,7 +258,7 @@ compare-fields() {
 
     while true
     do
-        [ $order -ne 0 ] && { echo $order ; return ; }
+        [[ $order -ne 0 ]] && { echo ${order} ; return ; }
 
         : $(( i++ ))
         left="${leftfield[$i]}"
@@ -251,7 +276,7 @@ compare-fields() {
 }
 
 version-compare() {
-  local order
+  local order V  V_
   validate-version "$1" V
   validate-version "$2" V_
 
@@ -261,7 +286,7 @@ version-compare() {
   local right=( "${V_[0]}" "${V_[1]}" "${V_[2]}" )
 
   order=$(compare-fields left right)
-  [ "$order" -ne 0 ] && { echo "$order" ; return ; }
+  [[ "$order" -ne 0 ]] && { echo "$order" ; return ; }
 
   # compare pre-release ids when M.m.p are equal
 
@@ -273,9 +298,9 @@ version-compare() {
   # if left and right have no pre-release part, then left equals right
   # if only one of left/right has pre-release part, that one is less than simple M.m.p
 
-  [ -z "$prerel" ] && [ -z "$prerel_" ] && { echo 0  ; return ; }
-  [ -z "$prerel" ]                      && { echo 1  ; return ; }
-                      [ -z "$prerel_" ] && { echo -1 ; return ; }
+  [[ -z "$prerel" ]] && [[ -z "$prerel_" ]] && { echo 0  ; return ; }
+  [[ -z "$prerel" ]]                      && { echo 1  ; return ; }
+                      [[ -z "$prerel_" ]] && { echo -1 ; return ; }
 
   # otherwise, compare the pre-release id's
 
@@ -300,11 +325,11 @@ version-parse-patch() {
 }
 
 version-parse-pre-release() {
-    echo "$1" | cut -d "." -f3 | grep -o '\-[0-9A-Za-z.]\+'
+    echo "$1" | cut -d "." -f3- | grep -o '\-[0-9A-Za-z.]\+'
 }
 
 version-parse-pre-release-pure() {
-    echo "$1" | cut -d "." -f3 | grep -o '\-[0-9A-Za-z.]\+'|cut -d "-" -f 2
+    echo "$1" | cut -d "." -f3- | grep -oP "^[0-9]*\-?\K[A-Za-z0-9\.\-]*"
 }
 
 version-parse-build() {
@@ -413,6 +438,7 @@ version-get() {
 }
 
 version-major() {
+    local new
     local pre_release=${1:+-$1}
     local build=${2:++$2}
     # shellcheck disable=SC2155
@@ -421,14 +447,15 @@ version-major() {
     local major=$(version-parse-major "${version}")
     if [[ "" == "$version" ]]
     then
-        local new=${VERSION_PREFIX}1.0.0${pre_release}${build}
+        new=${VERSION_PREFIX}1.0.0${pre_release}${build}
     else
-        local new=${VERSION_PREFIX}$((major+1)).0.0${pre_release}${build}
+        new=${VERSION_PREFIX}$((major+1)).0.0${pre_release}${build}
     fi
     version-do "$new" "$version"
 }
 
 version-minor() {
+   local new
     local pre_release=${1:+-$1}
     local build=${2:++$2}
     # shellcheck disable=SC2155
@@ -439,14 +466,15 @@ version-minor() {
     local minor=$(version-parse-minor "${version}")
     if [[ "" == "$version" ]]
     then
-        local new=${VERSION_PREFIX}0.1.0${pre_release}${build}
+        new=${VERSION_PREFIX}0.1.0${pre_release}${build}
     else
-        local new=${VERSION_PREFIX}${major}.$((minor+1)).0${pre_release}${build}
+        new=${VERSION_PREFIX}${major}.$((minor+1)).0${pre_release}${build}
     fi
     version-do "$new" "$version"
 }
 
 version-patch() {
+    local new
     local pre_release=${1:+-$1}
     local build=${2:++$2}
    # shellcheck disable=SC2155
@@ -459,10 +487,24 @@ version-patch() {
     local patch=$(version-parse-patch "${version}")
     if [[ "" == "$version" ]]
     then
-        local new=${VERSION_PREFIX}0.1.0${pre_release}${build}
+        new=${VERSION_PREFIX}0.1.0${pre_release}${build}
     else
-        local new=${VERSION_PREFIX}${major}.${minor}.$((patch+1))${pre_release}${build}
+        new=${VERSION_PREFIX}${major}.${minor}.$((patch+1))${pre_release}${build}
     fi
+    version-do "$new" "$version"
+}
+
+version-release() {
+    local new version major minor patch
+    new=${VERSION_PREFIX}0.1.0
+    version=$(version-get)
+    major=$(version-parse-major "${version}")
+    minor=$(version-parse-minor "${version}")
+    patch=$(version-parse-patch "${version}")
+    if [[ -n "$version" ]]; then
+        new=${VERSION_PREFIX}${major}.${minor}.${patch}
+    fi
+
     version-do "$new" "$version"
 }
 
@@ -627,7 +669,10 @@ case "$action" in
         version-parse
         ;;
     compare)
-        version-compare $v1 $v2
+        version-compare ${v1} ${v2}
+        ;;
+    release)
+        version-release
         ;;
     debug)
         plugin-debug
