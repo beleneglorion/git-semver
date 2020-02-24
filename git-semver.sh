@@ -61,16 +61,16 @@ usage() {
 		See https://github.com/markchalloner/git-semver for more detail.
 
 		Commands
-		 get                                                   Gets the current version (tag)
-		 major [--dryrun] [-p <pre-release>] [-b <build>]      Generates a tag for the next major version and echos to the screen
-		 minor [--dryrun] [-p [<pre-release> [-b <build>]      Generates a tag for the next minor version and echos to the screen
-		 patch|next [--dryrun] [-p <pre-release>] [-b <build>] Generates a tag for the next patch version and echos to the screen
-		 release [--dryrun]                                    Generates a tag for the core version (remove pre-release and build part)
-		 pre-release [--dryrun] -p <pre-release> [-b <build>]  Generates a tag for a pre-release version and echos to the screen
-		 build [--dryrun] -b <build>                           Generates a tag for a build and echos to the screen
-		 parse <version>                                       Return full and splited part of version
-		 compare <version1> <version1>                         Compare versions
-		 help                                                  This message
+		 get   [-f <filter>]                                                 Gets the current version (tag) ()
+		 major [--dryrun] [-p <pre-release>] [-b <build>] [-f <filter>]      Generates a tag for the next major version and echos to the screen
+		 minor [--dryrun] [-p [<pre-release> [-b <build>] [-f <filter>]      Generates a tag for the next minor version and echos to the screen
+		 patch|next [--dryrun] [-p <pre-release>] [-b <build>] [-f <filter>] Generates a tag for the next patch version and echos to the screen
+		 release [--dryrun]                                                  Generates a tag for the core version (remove pre-release and build part)
+		 pre-release [--dryrun] -p <pre-release> [-b <build>] [-f <filter>]  Generates a tag for a pre-release version and echos to the screen
+		 build [--dryrun] -b <build> [-f <filter>]                           Generates a tag for a build and echos to the screen
+		 parse <version> [-f <filter>]                                       Return full and splited part of version
+		 compare <version1> <version1>                                       Compare versions
+		 help                                                                This message
 
 	EOF
 	exit
@@ -360,7 +360,13 @@ version-parse() {
 
 version-get() {
     local sort_args version_main version version_pre_releases pre_release_id_count sorted_version tags pre_release_id_index
-    tags=$(git tag --sort=v:refname --merged)
+    filter=$1
+    # filter tags if needed
+    if [[ -n  ${filter} ]]; then
+      tags=$(git tag --sort=v:refname --merged|grep -v ${filter} )
+    else
+      tags=$(git tag --sort=v:refname --merged)
+    fi
     sorted_version=$(
         echo "$tags" |
             grep -oP "^${VERSION_PREFIX}\K[0-9]+\.[0-9]+\.[0-9]+.*" |
@@ -442,7 +448,7 @@ version-major() {
     local pre_release=${1:+-$1}
     local build=${2:++$2}
     # shellcheck disable=SC2155
-    local version=$(version-get)
+    local version=$(version-get $3 )
     # shellcheck disable=SC2155
     local major=$(version-parse-major "${version}")
     if [[ "" == "$version" ]]
@@ -459,7 +465,7 @@ version-minor() {
     local pre_release=${1:+-$1}
     local build=${2:++$2}
     # shellcheck disable=SC2155
-    local version=$(version-get)
+    local version=$(version-get $3)
     # shellcheck disable=SC2155
     local major=$(version-parse-major "${version}")
     # shellcheck disable=SC2155
@@ -478,7 +484,7 @@ version-patch() {
     local pre_release=${1:+-$1}
     local build=${2:++$2}
    # shellcheck disable=SC2155
-    local version=$(version-get)
+    local version=$(version-get $3)
     # shellcheck disable=SC2155
     local major=$(version-parse-major "${version}")
     # shellcheck disable=SC2155
@@ -512,7 +518,7 @@ version-pre-release() {
     local pre_release=$1
     local build=${2:++$2}
     # shellcheck disable=SC2155
-    local version=$(version-get)
+    local version=$(version-get $3)
     # shellcheck disable=SC2155
     local major=$(version-parse-major "${version}")
     # shellcheck disable=SC2155
@@ -532,7 +538,7 @@ version-pre-release() {
 version-build() {
     local build=$1
     # shellcheck disable=SC2155
-    local version=$(version-get)
+    local version=$(version-get $2)
     # shellcheck disable=SC2155
     local major=$(version-parse-major "${version}")
     # shellcheck disable=SC2155
@@ -603,6 +609,7 @@ GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD 2> /dev/null)"
 # Parse args
 action=
 build=
+filter=
 pre_release=
 dryrun=0
 while :
@@ -618,6 +625,10 @@ do
             build=$2
             shift
             validate-build "$build"
+            ;;
+        -f)
+            filter=$2
+            shift
             ;;
         -p)
             pre_release=$2
@@ -646,27 +657,27 @@ done
 
 case "$action" in
     get)
-        version-get
+        version-get "$filter"
         ;;
     major)
-        version-major "$pre_release" "$build"
+        version-major "$pre_release" "$build" "$filter"
         ;;
     minor)
-        version-minor "$pre_release" "$build"
+        version-minor "$pre_release" "$build" "$filter"
         ;;
     patch|next)
-        version-patch "$pre_release" "$build"
+        version-patch "$pre_release" "$build" "$filter"
         ;;
     pre-release)
         [[ -n "$pre_release" ]] || usage
-        version-pre-release "$pre_release" "$build"
+        version-pre-release "$pre_release" "$build" "$filter"
         ;;
     build)
         [[ -n "$build" ]] || usage
-        version-build "$build"
+        version-build "$build" "$filter"
         ;;
     parse)
-        version-parse
+        version-parse "$filter"
         ;;
     compare)
         version-compare ${v1} ${v2}
