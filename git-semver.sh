@@ -338,7 +338,7 @@ version-parse-build() {
 
 version-parse() {
     # shellcheck disable=SC2155
-    local version=$(version-get)
+    local version=$(version-get $1)
     # shellcheck disable=SC2155
     local major=$(version-parse-major "${version}")
     # shellcheck disable=SC2155
